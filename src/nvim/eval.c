@@ -11683,14 +11683,28 @@ static void f_jobresize(typval_T *argvars, typval_T *rettv)
   rettv->vval.v_number = 1;
 }
 
-static char **tv_to_argv(typval_T *cmd_tv, char **cmd)
+/// Build argument array that can be passed to os_system, job_init, etc.
+///
+/// @param cmd_tv If cmd is a string the produced command will include the
+///               &shell, if it is a list it is invoked directly, see the
+///               system() documentation.
+/// @param[out] uses_shell Set to true if the command is invoked through the
+///                        shell.
+static char **tv_to_argv(typval_T *cmd_tv, char **cmd, bool *uses_shell)
 {
   if (cmd_tv->v_type == VAR_STRING) {
     char *cmd_str = (char *)get_tv_string(cmd_tv);
     if (cmd) {
       *cmd = cmd_str;
     }
+    if (uses_shell) {
+      *uses_shell = true;
+    }
     return shell_build_argv(cmd_str, NULL);
+  }
+
+  if (uses_shell) {
+    *uses_shell = false;
   }
 
   if (cmd_tv->v_type != VAR_LIST) {
@@ -11746,7 +11760,8 @@ static void f_jobstart(typval_T *argvars, typval_T *rettv)
     return;
   }
 
-  char **argv = tv_to_argv(&argvars[0], NULL);
+  bool uses_shell;
+  char **argv = tv_to_argv(&argvars[0], NULL, &uses_shell);
   if (!argv) {
     return;  // Did error message in tv_to_argv.
   }
@@ -11784,7 +11799,7 @@ static void f_jobstart(typval_T *argvars, typval_T *rettv)
   bool pty = job_opts && get_dict_number(job_opts, (uint8_t *)"pty") != 0;
   bool detach = job_opts && get_dict_number(job_opts, (uint8_t *)"detach") != 0;
   TerminalJobData *data = common_job_init(argv, on_stdout, on_stderr, on_exit,
-                                          job_opts, pty, detach, cwd);
+                                          job_opts, pty, detach, cwd, !uses_shell);
   Process *proc = (Process *)&data->proc;
 
   if (pty) {
@@ -16256,7 +16271,8 @@ static void get_system_output_as_rettv(typval_T *argvars, typval_T *rettv,
   }
 
   // get shell command to execute
-  char **argv = tv_to_argv(&argvars[0], NULL);
+  bool uses_shell;
+  char **argv = tv_to_argv(&argvars[0], NULL, &uses_shell);
   if (!argv) {
     xfree(input);
     return;  // Already did emsg.
@@ -16265,7 +16281,7 @@ static void get_system_output_as_rettv(typval_T *argvars, typval_T *rettv,
   // execute the command
   size_t nread = 0;
   char *res = NULL;
-  int status = os_system(argv, input, input_len, &res, &nread);
+  int status = os_system(argv, input, input_len, !uses_shell, &res, &nread);
 
   xfree(input);
 
@@ -16489,7 +16505,8 @@ static void f_termopen(typval_T *argvars, typval_T *rettv)
   }
 
   char *cmd;
-  char **argv = tv_to_argv(&argvars[0], &cmd);
+  bool uses_shell;
+  char **argv = tv_to_argv(&argvars[0], &cmd, &uses_shell);
   if (!argv) {
     return;  // Did error message in tv_to_argv.
   }
@@ -16525,7 +16542,7 @@ static void f_termopen(typval_T *argvars, typval_T *rettv)
   }
 
   TerminalJobData *data = common_job_init(argv, on_stdout, on_stderr, on_exit,
-                                          job_opts, true, false, cwd);
+                                          job_opts, true, false, cwd, !uses_shell);
   data->proc.pty.width = curwin->w_width;
   data->proc.pty.height = curwin->w_height;
   data->proc.pty.term_name = xstrdup("xterm-256color");
@@ -21808,7 +21825,8 @@ static inline TerminalJobData *common_job_init(char **argv,
                                                dict_T *self,
                                                bool pty,
                                                bool detach,
-                                               char *cwd)
+                                               char *cwd,
+					       bool quote_cmd)
 {
   TerminalJobData *data = xcalloc(1, sizeof(TerminalJobData));
   data->stopped = false;
@@ -21824,6 +21842,7 @@ static inline TerminalJobData *common_job_init(char **argv,
   }
   Process *proc = (Process *)&data->proc;
   proc->argv = argv;
+  proc->quote_cmd = quote_cmd;
   proc->in = &data->in;
   proc->out = &data->out;
   if (!pty) {
