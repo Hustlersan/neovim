@@ -261,8 +261,18 @@ local function write_file(name, text, dont_dedent)
   file:close()
 end
 
+local function tmpname(func)
+  if ffi.os == 'Windows' then
+    -- In Windows tmpname() returns filename starting with special sequence \s
+    local fname = os.getenv('TEMP') .. '\\' .. os.tmpname():gsub('^\\', '')
+    return fname
+  else
+    return os.tmpname()
+  end
+end
+
 local function source(code)
-  local tmpname = os.tmpname()
+  local tmpname = tmpname()
   if os_name() == 'osx' and string.match(tmpname, '^/tmp') then
    tmpname = '/private'..tmpname
   end
@@ -458,6 +468,7 @@ return function(after_each)
     curbufmeths = curbufmeths,
     curwinmeths = curwinmeths,
     curtabmeths = curtabmeths,
+    tmpname = tmpname,
     NIL = mpack.NIL,
   }
 end
